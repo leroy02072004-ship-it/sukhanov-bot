@@ -153,12 +153,12 @@ async def send_plain_file(chat_id: int, path: str, caption: str = "", reply_mark
                                f"[ЗАГЛУШКА: файл «{path}» ещё не загружен на сервер]", reply_markup=reply_markup)
 
 async def send_trainer_protected(chat_id: int, user, caption: str = ""):
-    """Отправляет тренажёр с защитой от пересылки и сохранения."""
+    """Отправляет тренажёр (без защиты — пересылка, сохранение и скриншоты разрешены)."""
     if not os.path.exists(TRAINER_FILE):
         await bot.send_message(chat_id, (caption + "\n\n" if caption else "") +
                                f"[ЗАГЛУШКА: файл тренажёра «{TRAINER_FILE}» ещё не загружен]")
         return
-    await bot.send_document(chat_id, FSInputFile(TRAINER_FILE), caption=caption or None, protect_content=True)
+    await bot.send_document(chat_id, FSInputFile(TRAINER_FILE), caption=caption or None)
 
 # ─── ССЫЛКА (заглушка-безопасно) ─────────────────────────────
 def link_or_stub(url: str, name: str) -> str:
@@ -206,13 +206,30 @@ def kb_after_trainer():
         [InlineKeyboardButton(text="📈 Больше подсказок для прибыли", callback_data="more_value")],
     ])
 
-def kb_menu5():
+def kb_get_bonus():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Канал пользы + совет", callback_data="channel_benefit")],
-        [InlineKeyboardButton(text="💼 Индивидуальная сессия", callback_data="session")],
-        [InlineKeyboardButton(text="🤝 Партнёрство и спец. условия", callback_data="partnership")],
-        [InlineKeyboardButton(text="📄 Полезные статьи", callback_data="articles")],
+        [InlineKeyboardButton(text="🎁 Я оставил отзыв, забрать подарок", callback_data="get_bonus")],
     ])
+
+def kb_passed():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да", callback_data="passed_yes")],
+        [InlineKeyboardButton(text="❌ Нет", callback_data="passed_no")],
+    ])
+
+def kb_menu5(exclude=None):
+    rows = [
+        ("📢 Канал пользы + совет", "channel_benefit"),
+        ("💼 Индивидуальная сессия", "session"),
+        ("🤝 Партнёрство и спец. условия", "partnership"),
+        ("📄 Полезные статьи", "articles"),
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t, callback_data=c)] for t, c in rows if c != exclude
+    ])
+
+async def more_value_menu(chat_id: int, exclude: str, intro: str = "Заберите ещё больше пользы!"):
+    await bot.send_message(chat_id, intro, reply_markup=kb_menu5(exclude=exclude))
 
 def kb_trainers_list():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -308,16 +325,7 @@ async def cb_go_trainer_intro(callback: CallbackQuery):
     uid = callback.from_user.id
     cancel_start_dojims(uid)
     safe_remove(f"about5_{uid}")
-    await callback.message.answer(
-        "Отлично, быстрые решения — основа успеха!\n\n"
-        "Отвечая на специальные вопросы этого тренажёра, всего по 5 минут в день, вы сможете:\n\n"
-        "✅ активировать упущенные каналы трафика и прибыли\n"
-        "✅ сократить расходы ресурсов и нецелевые затраты\n"
-        "✅ вернуть «недошедших», но уже плативших\n"
-        "✅ оставить только ключевые действия\n"
-        "✅ увеличить КПД инвестиций в рекламу\n"
-        "✅ забрать лучший опыт рынка и потенциальных партнёров из смежных отраслей"
-    )
+    await callback.message.answer("Отлично, быстрые решения — основа успеха!")
     await callback.message.answer(
         "<b>Совет!</b>\n"
         "✅ Сразу фиксируйте все мысли и инсайты произвольным списком (лучше пройти 2–3 раза).\n"
@@ -334,10 +342,10 @@ async def cb_open_trainer(callback: CallbackQuery):
     user = callback.from_user
     cancel_start_dojims(user.id)
     await mark_trainer_opened(user.id)
-    await callback.message.answer("⚛️ Запускаю тренажёр\n❗️ Файл защищён, открывайте прямо здесь 👇")
+    await callback.message.answer("⚛️ Запускаю тренажёр 👇")
     await send_trainer_protected(user.id, user, caption="🔍 Тренажёр «Золотые каналы трафика»")
     # через 10 минут — запрос отзыва
-    scheduler.add_job(review_prompt, "date", run_date=datetime.now() + timedelta(minutes=10),
+    scheduler.add_job(ask_passed, "date", run_date=datetime.now() + timedelta(minutes=10),
                       args=[user.id], id=f"review_{user.id}", replace_existing=True)
     await callback.answer()
 
@@ -345,14 +353,21 @@ async def cb_open_trainer(callback: CallbackQuery):
 @dp.callback_query(F.data == "share_review")
 async def cb_share_review(callback: CallbackQuery):
     safe_remove(f"menu1h_{callback.from_user.id}")
-    await mark_review_sent(callback.from_user.id)
     await callback.message.answer(
         "Поделитесь коротким отзывом в произвольной форме по ссылке:\n"
         f"{link_or_stub(REVIEW_FORM_URL, 'анкета отзыва')}\n\n"
-        "А вот ваш подарок — чек-лист «120+ актуальных каналов трафика 2026» 🎁"
+        "Как оставите отзыв — вернитесь сюда и нажмите кнопку ниже, и я пришлю ваш подарок 🎁",
+        reply_markup=kb_get_bonus(),
     )
-    await send_plain_file(callback.from_user.id, BONUS_FILE, caption="🎁 120+ каналов трафика 2026")
-    await mark_bonus_sent(callback.from_user.id)
+    await callback.answer()
+
+@dp.callback_query(F.data == "get_bonus")
+async def cb_get_bonus(callback: CallbackQuery):
+    uid = callback.from_user.id
+    await mark_review_sent(uid)
+    await callback.message.answer("Спасибо за отзыв! Забирайте подарок 🎁")
+    await send_plain_file(uid, BONUS_FILE, caption="🎁 120+ каналов трафика 2026")
+    await mark_bonus_sent(uid)
     await callback.message.answer(
         "Переходите к следующему шагу — у нас ещё много важных подсказок для вашей прибыли 👇",
         reply_markup=kb_menu5(),
@@ -363,6 +378,32 @@ async def cb_share_review(callback: CallbackQuery):
 async def cb_more_value(callback: CallbackQuery):
     safe_remove(f"menu1h_{callback.from_user.id}")
     await show_menu5(callback.from_user.id, "🤗 СУПЕР, наш человек)!")
+    await callback.answer()
+
+@dp.callback_query(F.data == "passed_yes")
+async def cb_passed_yes(callback: CallbackQuery):
+    uid = callback.from_user.id
+    safe_remove(f"menu1h_{uid}")
+    await callback.message.answer(
+        "🔥 КЛАСС, хорошая заявка на лидерство!\n\n"
+        "❓️Как вам тренажёр? Поделитесь коротким отзывом и забирайте подарок — "
+        "чек-лист «120+ актуальных каналов трафика 2026»."
+    )
+    await callback.message.answer(
+        "Переходите к следующему шагу — у нас ещё много важных подсказок для вашей прибыли🎁",
+        reply_markup=kb_after_trainer(),
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "passed_no")
+async def cb_passed_no(callback: CallbackQuery):
+    uid = callback.from_user.id
+    safe_remove(f"menu1h_{uid}")
+    await callback.message.answer(
+        "Не откладывайте — пройдите тренажёр, это всего 5 минут в день. "
+        "А дальше вас ждёт ещё много пользы! 🚀",
+        reply_markup=kb_open_trainer(),
+    )
     await callback.answer()
 
 # ─── МЕНЮ 5 НАПРАВЛЕНИЙ ──────────────────────────────────────
@@ -419,10 +460,11 @@ async def channel_offer(chat_id: int):
         await bot.send_message(
             chat_id,
             "✅ Отлично, видим вашу подписку!\n\n"
-            "Чтобы получить индивидуальный аудио-совет (до 3 минут, действует 24 часа), "
-            "напишите эксперту кодовое слово: СОВЕТ\n"
+            "Чтобы получить индивидуальный аудио-совет (до 3 минут), напишите эксперту "
+            "кодовое слово: \"СОВЕТ\" (действует 24 часа)\n"
             f"{link_or_stub(DM_URL, 'эксперт')}"
         )
+        await more_value_menu(chat_id, "channel_benefit")
 
 @dp.callback_query(F.data == "channel_benefit")
 async def cb_channel_benefit(callback: CallbackQuery):
@@ -451,23 +493,26 @@ async def process_audio_question(message: Message, state: FSMContext):
 async def cb_session(callback: CallbackQuery):
     uid = callback.from_user.id
     await callback.message.answer(
-        "💼 Индивидуальная часовая сессия по теме «Атомный маркетинг» (постоплата).\n\n"
+        "💼 Индивидуальная часовая сессия по теме «Атомный маркетинг». Постоплата!\n\n"
         "Прикладываю презентацию сопровождения 👇"
     )
     await send_plain_file(uid, SUPPORT_FILE, caption="📑 Презентация сопровождения")
     await callback.message.answer(
-        "Готовы обсудить детали и записаться? Напишите нам:\n"
-        f"{link_or_stub(DM_URL, 'эксперт')}"
+        "Готовы обсудить детали и записаться? Напишите в службу заботы АТОМНОГО маркетинга\n"
+        "@valerisuhanova"
     )
+    await more_value_menu(uid, "session", intro="Всю пользу забрали?")
     await callback.answer()
 
 @dp.callback_query(F.data == "partnership")
 async def cb_partnership(callback: CallbackQuery):
+    uid = callback.from_user.id
     await callback.message.answer(
         "🤝 Партнёрство и спец. условия.\n\n"
-        "Напишите эксперту, обсудим варианты сотрудничества:\n"
-        f"{link_or_stub(DM_URL, 'эксперт')}"
+        "Напишите Сергею лично, чтобы обсудить детали:\n"
+        "@suhanov888"
     )
+    await more_value_menu(uid, "partnership")
     await callback.answer()
 
 @dp.callback_query(F.data == "continue_trainers")
@@ -482,11 +527,12 @@ async def cb_continue_trainers(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "articles")
 async def cb_articles(callback: CallbackQuery):
-    # TODO: доработать подветку статей по общему алгоритму
+    uid = callback.from_user.id
     await callback.message.answer(
         "📄 Полезные статьи Сергея Суханова:\n"
         f"{link_or_stub(ARTICLES_URL, 'статьи')}"
     )
+    await more_value_menu(uid, "articles")
     await callback.answer()
 
 @dp.callback_query(F.data == "coming_soon")
@@ -573,11 +619,28 @@ async def cmd_admin(message: Message):
             opened = (await c.fetchone())[0]
         async with db.execute("SELECT COUNT(*) FROM users WHERE review_sent = 1") as c:
             reviews = (await c.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM users WHERE bonus_sent = 1") as c:
+            bonuses = (await c.fetchone())[0]
         async with db.execute("SELECT COUNT(*) FROM referrals") as c:
             refs = (await c.fetchone())[0]
+        async with db.execute("SELECT stage, COUNT(*) FROM users GROUP BY stage") as c:
+            stages = await c.fetchall()
+    stage_names = {
+        "new": "Только зашли",
+        "trainer_opened": "Открыли тренажёр",
+        "remind_later": "Напомнить позже",
+        "notify_offers": "Согласны на предложения",
+        "dont_disturb": "Не беспокоить",
+    }
+    stage_lines = "\n".join(f"  • {stage_names.get(s, s)}: {n}" for s, n in stages)
     await message.answer(
-        f"📊 Статистика бота:\n\n👥 Всего пользователей: {total}\n"
-        f"🔍 Открыли тренажёр: {opened}\n✍️ Оставили отзыв: {reviews}\n🔗 Рефералов: {refs}"
+        f"📊 Статистика бота:\n\n"
+        f"👥 Всего пользователей: {total}\n"
+        f"🔍 Открыли тренажёр: {opened}\n"
+        f"✍️ Оставили отзыв: {reviews}\n"
+        f"🎁 Забрали подарок: {bonuses}\n"
+        f"🔗 Рефералов: {refs}\n\n"
+        f"Этапы воронки:\n{stage_lines}"
     )
 
 # ─── ОТЛОЖЕННЫЕ СООБЩЕНИЯ (дожимы) ───────────────────────────
@@ -600,23 +663,13 @@ async def time_pressure(user_id: int):
     except Exception as e:
         logger.error(f"Ошибка time_pressure для {user_id}: {e}")
 
-async def review_prompt(user_id: int):
+async def ask_passed(user_id: int):
     try:
-        await bot.send_message(
-            user_id,
-            "🔥 КЛАСС, хорошая заявка на лидерство!\n\n"
-            "❓️Как вам тренажёр? Поделитесь коротким отзывом и забирайте подарок — "
-            "чек-лист «120+ актуальных каналов трафика 2026».",
-        )
-        await bot.send_message(
-            user_id,
-            "Переходите к следующему шагу — у нас ещё много важных подсказок для вашей прибыли🎁",
-            reply_markup=kb_after_trainer(),
-        )
+        await bot.send_message(user_id, "Удалось пройти тренажёр?", reply_markup=kb_passed())
         scheduler.add_job(menu_nudge, "date", run_date=datetime.now() + timedelta(hours=1),
                           args=[user_id], id=f"menu1h_{user_id}", replace_existing=True)
     except Exception as e:
-        logger.error(f"Ошибка review_prompt для {user_id}: {e}")
+        logger.error(f"Ошибка ask_passed для {user_id}: {e}")
 
 async def menu_nudge(user_id: int):
     try:
