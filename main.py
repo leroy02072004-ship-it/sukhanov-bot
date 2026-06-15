@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import io
+import html
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
@@ -19,27 +20,30 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ─── НАСТРОЙКИ ───────────────────────────────────────────────
 try:
-    from config import (
-        BOT_TOKEN, ADMIN_ID, BOT_USERNAME,
-        PRESENTATION_FILE, TRAINER_FILE, BONUS_FILE,
-        CHANNEL_URL, REVIEW_FORM_URL, DM_URL,
-        TRAINERS_PRESENTATION_URL, ARTICLES_URL, YUKASSA_URL,
-    )
-except ImportError:
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    ADMIN_ID = int(os.getenv("ADMIN_ID", "1017267579"))
-    BOT_USERNAME = os.getenv("BOT_USERNAME", "Trenajer_suhanova_bot")
-    # Файлы (лежат рядом с main.py на сервере)
-    PRESENTATION_FILE = os.getenv("PRESENTATION_FILE", "presentation.pdf")  # презентация о тренажёре, БЕЗ водяного знака
-    TRAINER_FILE = os.getenv("TRAINER_FILE", "trainer.pdf")                 # сам тренажёр — выдаётся С водяным знаком
-    BONUS_FILE = os.getenv("BONUS_FILE", "bonus_120.pdf")                   # подарок «120+ каналов», БЕЗ водяного знака
-    # Ссылки-заглушки (подставить в config.py)
-    CHANNEL_URL = os.getenv("CHANNEL_URL", "ЗАГЛУШКА")
-    REVIEW_FORM_URL = os.getenv("REVIEW_FORM_URL", "ЗАГЛУШКА")
-    DM_URL = os.getenv("DM_URL", "ЗАГЛУШКА")
-    TRAINERS_PRESENTATION_URL = os.getenv("TRAINERS_PRESENTATION_URL", "ЗАГЛУШКА")
-    ARTICLES_URL = os.getenv("ARTICLES_URL", "ЗАГЛУШКА")
-    YUKASSA_URL = os.getenv("YUKASSA_URL", "ЗАГЛУШКА")
+    import config as _cfg
+except Exception:
+    _cfg = None
+
+def _cfg_get(name, default=None):
+    if _cfg is not None and hasattr(_cfg, name):
+        return getattr(_cfg, name)
+    return os.getenv(name, default)
+
+BOT_TOKEN = _cfg_get("BOT_TOKEN")
+ADMIN_ID = int(_cfg_get("ADMIN_ID", 1017267579))
+BOT_USERNAME = _cfg_get("BOT_USERNAME", "Trenajer_suhanova_bot")
+# Файлы (лежат рядом с main.py на сервере)
+PRESENTATION_FILE = _cfg_get("PRESENTATION_FILE", "presentation.pdf")  # презентация, БЕЗ водяного знака
+TRAINER_FILE = _cfg_get("TRAINER_FILE", "trainer.pdf")                 # тренажёр — выдаётся С водяным знаком
+BONUS_FILE = _cfg_get("BONUS_FILE", "bonus_120.pdf")                   # подарок «120+ каналов», БЕЗ водяного знака
+SUPPORT_FILE = _cfg_get("SUPPORT_FILE", "Презентация_сопровождения.pdf")  # презентация сопровождения (сессия)
+# Ссылки
+CHANNEL_URL = _cfg_get("CHANNEL_URL", "ЗАГЛУШКА")
+REVIEW_FORM_URL = _cfg_get("REVIEW_FORM_URL", "ЗАГЛУШКА")
+DM_URL = _cfg_get("DM_URL", "ЗАГЛУШКА")
+TRAINERS_PRESENTATION_URL = _cfg_get("TRAINERS_PRESENTATION_URL", "ЗАГЛУШКА")
+ARTICLES_URL = _cfg_get("ARTICLES_URL", "ЗАГЛУШКА")
+YUKASSA_URL = _cfg_get("YUKASSA_URL", "ЗАГЛУШКА")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан. Добавь config.py или переменную окружения BOT_TOKEN.")
@@ -138,77 +142,23 @@ async def get_referrals_list(referrer_id: int):
         ) as cur:
             return await cur.fetchall()
 
-# ─── ВОДЯНОЙ ЗНАК ────────────────────────────────────────────
-def make_watermarked_pdf(src_path: str, label: str) -> bytes:
-    """Накладывает именной водяной знак на каждую страницу PDF и возвращает байты."""
-    from pypdf import PdfReader, PdfWriter
-    from reportlab.pdfgen import canvas
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-
-    try:
-        pdfmetrics.registerFont(TTFont("WMFont", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-        font_name = "WMFont"
-    except Exception:
-        font_name = "Helvetica"
-
-    reader = PdfReader(src_path)
-    writer = PdfWriter()
-    for page in reader.pages:
-        W = float(page.mediabox.width)
-        H = float(page.mediabox.height)
-        buf = io.BytesIO()
-        c = canvas.Canvas(buf, pagesize=(W, H))
-        c.setFont(font_name, 20)
-        c.setFillColorRGB(1, 1, 1)
-        c.setFillAlpha(0.16)
-        step = 900
-        y = 60
-        while y < H:
-            c.saveState()
-            c.translate(W / 2, y)
-            c.rotate(20)
-            c.drawCentredString(0, 0, label)
-            c.restoreState()
-            y += step
-        c.save()
-        buf.seek(0)
-        wm = PdfReader(buf).pages[0]
-        page.merge_page(wm)
-        writer.add_page(page)
-
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
-
 # ─── ОТПРАВКА ФАЙЛОВ (с защитой от отсутствия файла) ─────────
-async def send_plain_file(chat_id: int, path: str, caption: str = ""):
-    """Отправляет файл без водяного знака (презентация, подарок)."""
+async def send_plain_file(chat_id: int, path: str, caption: str = "", reply_markup=None):
+    """Отправляет файл без защиты (презентация, подарок — можно пересылать)."""
     if os.path.exists(path):
-        await bot.send_document(chat_id, FSInputFile(path), caption=caption or None)
+        await bot.send_document(chat_id, FSInputFile(path), caption=caption or None,
+                                reply_markup=reply_markup)
     else:
         await bot.send_message(chat_id, (caption + "\n\n" if caption else "") +
-                               f"[ЗАГЛУШКА: файл «{path}» ещё не загружен на сервер]")
+                               f"[ЗАГЛУШКА: файл «{path}» ещё не загружен на сервер]", reply_markup=reply_markup)
 
 async def send_trainer_protected(chat_id: int, user, caption: str = ""):
-    """Отправляет тренажёр с именным водяным знаком и защитой от пересылки."""
+    """Отправляет тренажёр с защитой от пересылки и сохранения."""
     if not os.path.exists(TRAINER_FILE):
         await bot.send_message(chat_id, (caption + "\n\n" if caption else "") +
                                f"[ЗАГЛУШКА: файл тренажёра «{TRAINER_FILE}» ещё не загружен]")
         return
-    uname = f"@{user.username}" if user.username else (user.full_name or "")
-    label = f"{user.full_name} · {uname} · ID {user.id} · {datetime.now():%d.%m.%Y}"
-    try:
-        data = make_watermarked_pdf(TRAINER_FILE, label)
-        await bot.send_document(
-            chat_id,
-            BufferedInputFile(data, filename="trainer.pdf"),
-            caption=caption or None,
-            protect_content=True,  # запрет пересылки и сохранения
-        )
-    except Exception as e:
-        logger.error(f"Ошибка выдачи тренажёра {chat_id}: {e}")
-        await bot.send_message(chat_id, "Не удалось сформировать тренажёр, мы уже разбираемся. Напишите /start ещё раз чуть позже.")
+    await bot.send_document(chat_id, FSInputFile(TRAINER_FILE), caption=caption or None, protect_content=True)
 
 # ─── ССЫЛКА (заглушка-безопасно) ─────────────────────────────
 def link_or_stub(url: str, name: str) -> str:
@@ -258,9 +208,8 @@ def kb_after_trainer():
 
 def kb_menu5():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Канал пользы", callback_data="channel_benefit")],
+        [InlineKeyboardButton(text="📢 Канал пользы + совет", callback_data="channel_benefit")],
         [InlineKeyboardButton(text="💼 Индивидуальная сессия", callback_data="session")],
-        [InlineKeyboardButton(text="📚 Продолжить тренажёры", callback_data="continue_trainers")],
         [InlineKeyboardButton(text="🤝 Партнёрство и спец. условия", callback_data="partnership")],
         [InlineKeyboardButton(text="📄 Полезные статьи", callback_data="articles")],
     ])
@@ -329,47 +278,53 @@ async def cmd_start(message: Message):
         schedule_start_dojims(user_id)
 
     await message.answer(
-        f"{first_name}, приветствую, рад вам! 👋\n\n"
-        "Меня зовут АТОМ, я бот-помощник Сергея Суханова и администратор вашего взрывного роста. "
-        "Ценим ваше время, поэтому сразу к делу!\n\n"
+        f"{html.escape(first_name)}, приветствую, рад вам! 👋\n\n"
+        "Меня зовут АТОМ, я бот-помощник Сергея Суханова и администратор вашего взрывного роста.\n\n"
+        "<b>Ценим ваше время, поэтому сразу к делу!</b>\n\n"
         "❗ Важно: для вашей защиты от сомнений, игр разума и отложенных решений прохождение "
         "тренажёра БЕЗ ОПЛАТЫ возможно только в течение 48 часов.\n\n"
         "Выберите, с чего начнём:",
         reply_markup=kb_start(),
+        parse_mode="HTML",
     )
 
 # ─── О ПРОЕКТЕ (презентация — в начале, без водяного знака) ──
 @dp.callback_query(F.data == "about_project")
 async def cb_about_project(callback: CallbackQuery):
+    uid = callback.from_user.id
     await callback.message.answer(
         "Супер, люблю системный подход! Здесь можно ознакомиться с полной презентацией проекта "
         "«АТОМНЫЕ БИЗНЕС-ТРЕНАЖЁРЫ»:"
     )
-    await send_plain_file(callback.from_user.id, PRESENTATION_FILE, caption="📋 Презентация проекта")
-    await callback.message.answer(
-        "⏳ Время быстрой пользы истекает.",
-        reply_markup=kb_to_trainer(),
-    )
+    await send_plain_file(uid, PRESENTATION_FILE, caption="📋 Презентация проекта", reply_markup=kb_to_trainer())
+    # «Время быстрой пользы истекает» — через 5 минут, если не нажали «Пройти тренажёр»
+    scheduler.add_job(time_pressure, "date", run_date=datetime.now() + timedelta(minutes=5),
+                      args=[uid], id=f"about5_{uid}", replace_existing=True)
     await callback.answer()
 
 # ─── ВВОДНАЯ ПЕРЕД ТРЕНАЖЁРОМ ────────────────────────────────
 @dp.callback_query(F.data == "go_trainer_intro")
 async def cb_go_trainer_intro(callback: CallbackQuery):
-    cancel_start_dojims(callback.from_user.id)
+    uid = callback.from_user.id
+    cancel_start_dojims(uid)
+    safe_remove(f"about5_{uid}")
     await callback.message.answer(
         "Отлично, быстрые решения — основа успеха!\n\n"
-        "Этот тренажёр поможет вам, отвечая на триггерные вопросы, всего за 15 минут в день:\n\n"
-        "• активировать упущенные каналы трафика и прибыли\n"
-        "• сократить расходы ресурсов и нецелевые затраты\n"
-        "• вернуть «недошедших», но уже плативших\n"
-        "• оставить только ключевые действия\n"
-        "• увеличить КПД инвестиций в рекламу\n"
-        "• забрать лучший опыт рынка и потенциальных партнёров из смежных отраслей\n\n"
-        "Совет:\n"
-        "• Сразу фиксируйте все мысли и инсайты произвольным списком (лучше пройти 2–3 раза).\n"
-        "• Затем выберите 3 наиболее важных и приоритетных действия и запускайте первый шаг.\n"
-        "• Не забудьте забрать подарок: «120+ актуальных каналов трафика 2026».",
+        "Отвечая на специальные вопросы этого тренажёра, всего по 5 минут в день, вы сможете:\n\n"
+        "✅ активировать упущенные каналы трафика и прибыли\n"
+        "✅ сократить расходы ресурсов и нецелевые затраты\n"
+        "✅ вернуть «недошедших», но уже плативших\n"
+        "✅ оставить только ключевые действия\n"
+        "✅ увеличить КПД инвестиций в рекламу\n"
+        "✅ забрать лучший опыт рынка и потенциальных партнёров из смежных отраслей"
+    )
+    await callback.message.answer(
+        "<b>Совет!</b>\n"
+        "✅ Сразу фиксируйте все мысли и инсайты произвольным списком (лучше пройти 2–3 раза).\n"
+        "✅ Затем выберите 3 наиболее важных и приоритетных действия и запускайте первый шаг.\n"
+        "✅ Не забудьте забрать подарок: «120+ актуальных каналов трафика 2026».",
         reply_markup=kb_open_trainer(),
+        parse_mode="HTML",
     )
     await callback.answer()
 
@@ -379,7 +334,7 @@ async def cb_open_trainer(callback: CallbackQuery):
     user = callback.from_user
     cancel_start_dojims(user.id)
     await mark_trainer_opened(user.id)
-    await callback.message.answer("Запускаю тренажёр. Файл защищён от пересылки — открывайте прямо здесь 👇")
+    await callback.message.answer("⚛️ Запускаю тренажёр\n❗️ Файл защищён, открывайте прямо здесь 👇")
     await send_trainer_protected(user.id, user, caption="🔍 Тренажёр «Золотые каналы трафика»")
     # через 10 минут — запрос отзыва
     scheduler.add_job(review_prompt, "date", run_date=datetime.now() + timedelta(minutes=10),
@@ -407,32 +362,76 @@ async def cb_share_review(callback: CallbackQuery):
 @dp.callback_query(F.data == "more_value")
 async def cb_more_value(callback: CallbackQuery):
     safe_remove(f"menu1h_{callback.from_user.id}")
-    await show_menu5(callback.from_user.id, "Супер, наш человек!\n\nВот варианты дальнейшего взаимодействия:")
+    await show_menu5(callback.from_user.id, "🤗 СУПЕР, наш человек)!")
     await callback.answer()
 
 # ─── МЕНЮ 5 НАПРАВЛЕНИЙ ──────────────────────────────────────
 async def show_menu5(chat_id: int, intro: str):
     await bot.send_message(
         chat_id,
-        intro + "\n\n"
-        "• больше пользы БЕЗ ОПЛАТЫ — экспертный канал + подарок (индивидуальный аудио-совет до 3 минут, доступно 24 часа)\n"
-        "• записаться на индивидуальную часовую сессию по теме «Атомный маркетинг» (постоплата)\n"
-        "• продолжить прохождение Атомных бизнес-тренажёров (платно)\n"
-        "• обсудить варианты партнёрства и спец. условий\n"
-        "• полезные статьи: «ТОП скрытых факапов, которые ежедневно режут трафик и прибыль»",
+        intro + "\n\nПодготовили для вас ещё больше пользы:\n\n"
+        "📍 экспертный канал + подарок (индивидуальный аудио-совет до 3 минут, доступно 24 часа)\n"
+        "📍 записаться на индивидуальную часовую сессию по теме «Атомный маркетинг» (постоплата)\n"
+        "📍 обсудить варианты партнёрства и спец. условий\n"
+        "📍 полезные статьи: «ТОП скрытых факапов, которые ежедневно режут трафик и прибыль»",
         reply_markup=kb_menu5(),
     )
 
+def channel_chat_id():
+    """Достаёт @username канала из CHANNEL_URL для проверки подписки."""
+    url = CHANNEL_URL or ""
+    if "t.me/" in url:
+        uname = url.rstrip("/").split("t.me/")[-1].split("?")[0]
+        if uname and not uname.startswith("+"):
+            return "@" + uname
+    return None
+
+async def is_subscribed(user_id: int):
+    """True — подписан, False — точно не подписан, None — проверить нельзя (бот не админ/приватный канал)."""
+    chat = channel_chat_id()
+    if not chat:
+        return None
+    try:
+        m = await bot.get_chat_member(chat, user_id)
+        return m.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.error(f"Проверка подписки не удалась: {e}")
+        return None
+
+def kb_check_sub():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Я подписался, проверить", callback_data="check_sub")],
+    ])
+
+async def channel_offer(chat_id: int):
+    sub = await is_subscribed(chat_id)
+    if sub is False:
+        # точно не подписан — просим подписаться
+        await bot.send_message(
+            chat_id,
+            "📢 Подпишитесь на наш экспертный канал пользы, чтобы забрать подарок:\n"
+            f"{link_or_stub(CHANNEL_URL, 'канал пользы')}\n\n"
+            "После подписки нажмите кнопку ниже 👇",
+            reply_markup=kb_check_sub(),
+        )
+    else:
+        # подписан или проверить нельзя — выдаём кодовое слово
+        await bot.send_message(
+            chat_id,
+            "✅ Отлично, видим вашу подписку!\n\n"
+            "Чтобы получить индивидуальный аудио-совет (до 3 минут, действует 24 часа), "
+            "напишите эксперту кодовое слово: СОВЕТ\n"
+            f"{link_or_stub(DM_URL, 'эксперт')}"
+        )
+
 @dp.callback_query(F.data == "channel_benefit")
-async def cb_channel_benefit(callback: CallbackQuery, state: FSMContext):
-    # TODO: при наличии канала и прав админа — проверять подписку через getChatMember
-    await callback.message.answer(
-        "📢 Наш экспертный канал пользы:\n"
-        f"{link_or_stub(CHANNEL_URL, 'канал пользы')}\n\n"
-        "Супер, рады, что вы с нами! Для получения индивидуального аудио-совета напишите свой вопрос одним сообщением. "
-        "Срок действия предложения — 24 часа!"
-    )
-    await state.set_state(Flow.waiting_audio_question)
+async def cb_channel_benefit(callback: CallbackQuery):
+    await channel_offer(callback.from_user.id)
+    await callback.answer()
+
+@dp.callback_query(F.data == "check_sub")
+async def cb_check_sub(callback: CallbackQuery):
+    await channel_offer(callback.from_user.id)
     await callback.answer()
 
 @dp.message(Flow.waiting_audio_question)
@@ -450,10 +449,15 @@ async def process_audio_question(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "session")
 async def cb_session(callback: CallbackQuery):
+    uid = callback.from_user.id
     await callback.message.answer(
         "💼 Индивидуальная часовая сессия по теме «Атомный маркетинг» (постоплата).\n\n"
-        "Напишите нам — пришлём анкету и презентацию сопровождения:\n"
-        f"{link_or_stub(DM_URL, 'личка')}"
+        "Прикладываю презентацию сопровождения 👇"
+    )
+    await send_plain_file(uid, SUPPORT_FILE, caption="📑 Презентация сопровождения")
+    await callback.message.answer(
+        "Готовы обсудить детали и записаться? Напишите нам:\n"
+        f"{link_or_stub(DM_URL, 'эксперт')}"
     )
     await callback.answer()
 
@@ -461,8 +465,8 @@ async def cb_session(callback: CallbackQuery):
 async def cb_partnership(callback: CallbackQuery):
     await callback.message.answer(
         "🤝 Партнёрство и спец. условия.\n\n"
-        "Напишите нам, обсудим варианты сотрудничества:\n"
-        f"{link_or_stub(DM_URL, 'личка')}"
+        "Напишите эксперту, обсудим варианты сотрудничества:\n"
+        f"{link_or_stub(DM_URL, 'эксперт')}"
     )
     await callback.answer()
 
@@ -590,14 +594,23 @@ async def dojim(user_id: int, key: str):
     except Exception as e:
         logger.error(f"Ошибка дожима {key} для {user_id}: {e}")
 
+async def time_pressure(user_id: int):
+    try:
+        await bot.send_message(user_id, "⏳ Время быстрой пользы истекает.", reply_markup=kb_to_trainer())
+    except Exception as e:
+        logger.error(f"Ошибка time_pressure для {user_id}: {e}")
+
 async def review_prompt(user_id: int):
     try:
         await bot.send_message(
             user_id,
-            "КЛАСС, хорошая заявка на лидерство в рынке)!\n\n"
-            "Как вам тренажёр? Поделитесь коротким отзывом и забирайте подарок — "
-            "чек-лист «120+ актуальных каналов трафика 2026».\n\n"
-            "Переходите к следующему шагу — у нас ещё много важных подсказок для вашей прибыли.",
+            "🔥 КЛАСС, хорошая заявка на лидерство!\n\n"
+            "❓️Как вам тренажёр? Поделитесь коротким отзывом и забирайте подарок — "
+            "чек-лист «120+ актуальных каналов трафика 2026».",
+        )
+        await bot.send_message(
+            user_id,
+            "Переходите к следующему шагу — у нас ещё много важных подсказок для вашей прибыли🎁",
             reply_markup=kb_after_trainer(),
         )
         scheduler.add_job(menu_nudge, "date", run_date=datetime.now() + timedelta(hours=1),
@@ -607,7 +620,7 @@ async def review_prompt(user_id: int):
 
 async def menu_nudge(user_id: int):
     try:
-        await show_menu5(user_id, "Возможно, вас отвлекли) Вот варианты дальнейшего взаимодействия:")
+        await show_menu5(user_id, "Возможно, вас отвлекли)")
     except Exception as e:
         logger.error(f"Ошибка menu_nudge для {user_id}: {e}")
 
