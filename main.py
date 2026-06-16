@@ -234,19 +234,26 @@ def kb_passed():
         [InlineKeyboardButton(text="❌ Нет", callback_data="passed_no")],
     ])
 
-def kb_menu5(exclude=None):
+def kb_menu5(exclude=None, with_done=False):
     rows = [
         ("📢 Канал пользы + совет", "channel_benefit"),
         ("💼 Индивидуальная сессия", "session"),
         ("🤝 Партнёрство и спец. условия", "partnership"),
         ("📄 Полезные статьи", "articles"),
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t, callback_data=c)] for t, c in rows if c != exclude
-    ])
+    kb = [[InlineKeyboardButton(text=t, callback_data=c)] for t, c in rows if c != exclude]
+    if with_done:
+        kb.append([InlineKeyboardButton(text="✅ Да, спасибо", callback_data="all_done")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
-async def more_value_menu(chat_id: int, exclude: str, intro: str = "Заберите ещё больше пользы!"):
-    await bot.send_message(chat_id, intro, reply_markup=kb_menu5(exclude=exclude))
+async def more_value_menu(chat_id: int, exclude: str, intro: str = "Заберите ещё больше пользы!", with_done: bool = False):
+    await bot.send_message(chat_id, intro, reply_markup=kb_menu5(exclude=exclude, with_done=with_done))
+
+def kb_consent():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Да, конечно", callback_data="consent_yes")],
+        [InlineKeyboardButton(text="Нет, спасибо", callback_data="consent_no")],
+    ])
 
 def kb_trainers_list():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -535,7 +542,7 @@ async def cb_session(callback: CallbackQuery):
         "Готовы обсудить детали и записаться? Напишите в службу заботы АТОМНОГО маркетинга\n"
         "@valerisuhanova"
     )
-    await more_value_menu(uid, "session", intro="Всю пользу забрали?")
+    await more_value_menu(uid, "session", intro="Всю пользу забрали?", with_done=True)
     await callback.answer()
 
 @dp.callback_query(F.data == "partnership")
@@ -567,6 +574,28 @@ async def cb_articles(callback: CallbackQuery):
         f"{link_or_stub(ARTICLES_URL, 'статьи')}"
     )
     await more_value_menu(uid, "articles")
+    await callback.answer()
+
+@dp.callback_query(F.data == "all_done")
+async def cb_all_done(callback: CallbackQuery):
+    await callback.message.answer(
+        "Супер, рады, что теперь мы рядом!\n\n"
+        "Присылать вам новые полезные материалы, спец. предложения и подарки?",
+        reply_markup=kb_consent(),
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "consent_yes")
+async def cb_consent_yes(callback: CallbackQuery):
+    await set_stage(callback.from_user.id, "notify_offers")
+    await callback.message.answer("Супер, до связи! ♥️")
+    await callback.answer()
+
+@dp.callback_query(F.data == "consent_no")
+async def cb_consent_no(callback: CallbackQuery):
+    await set_stage(callback.from_user.id, "dont_disturb")
+    safe_remove(f"close48_{callback.from_user.id}")
+    await callback.message.answer("Хорошо, всего вам наилучшего 🤝🏻")
     await callback.answer()
 
 @dp.callback_query(F.data == "coming_soon")
