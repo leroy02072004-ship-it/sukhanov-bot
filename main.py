@@ -56,6 +56,15 @@ scheduler = AsyncIOScheduler()
 
 FREE_HOURS = 48  # окно бесплатного доступа
 
+STAGE_NAMES = {
+    "new": "Только зашёл",
+    "trainer_opened": "Открыл тренажёр",
+    "passed": "Прошёл тренажёр",
+    "remind_later": "Напомнить позже",
+    "notify_offers": "Согласен на предложения",
+    "dont_disturb": "Не беспокоить",
+}
+
 # ─── БД ──────────────────────────────────────────────────────
 async def init_db():
     async with aiosqlite.connect("bot.db") as db:
@@ -139,6 +148,14 @@ async def get_referrals_list(referrer_id: int):
             "FROM referrals r LEFT JOIN users u ON u.user_id = r.referred_id "
             "WHERE r.referrer_id = ? ORDER BY r.created_at",
             (referrer_id,),
+        ) as cur:
+            return await cur.fetchall()
+
+async def get_all_users(limit: int = 60):
+    async with aiosqlite.connect("bot.db") as db:
+        async with db.execute(
+            "SELECT user_id, username, full_name, stage FROM users ORDER BY started_at DESC LIMIT ?",
+            (limit,),
         ) as cur:
             return await cur.fetchall()
 
@@ -272,13 +289,14 @@ async def cmd_start(message: Message):
     first_name = user.first_name or "друг"
 
     existing = await get_user(user_id)
+    args = message.text.split()
+    start_param = args[1] if len(args) > 1 else None
 
     # реферал
     ref_id = None
-    args = message.text.split()
-    if len(args) > 1 and args[1].startswith("ref"):
+    if start_param and start_param.startswith("ref"):
         try:
-            ref_id = int(args[1][3:])
+            ref_id = int(start_param[3:])
         except ValueError:
             ref_id = None
     if existing is None and ref_id is not None and ref_id != user_id:
@@ -290,6 +308,18 @@ async def cmd_start(message: Message):
             pass
 
     await add_user(user_id, username, full_name, ref_id)
+
+    # возврат из анкеты отзыва по ссылке → выдаём подарок
+    if start_param == "bonus":
+        await mark_review_sent(user_id)
+        await message.answer("Спасибо за отзыв! Забирайте подарок 🎁")
+        await send_plain_file(user_id, BONUS_FILE, caption="🎁 120+ каналов трафика 2026")
+        await mark_bonus_sent(user_id)
+        await message.answer(
+            "Переходите к следующему шагу — у нас ещё много важных подсказок для вашей прибыли 👇",
+            reply_markup=kb_menu5(),
+        )
+        return
 
     if existing is None:
         schedule_start_dojims(user_id)
@@ -356,8 +386,7 @@ async def cb_share_review(callback: CallbackQuery):
     await callback.message.answer(
         "Поделитесь коротким отзывом в произвольной форме по ссылке:\n"
         f"{link_or_stub(REVIEW_FORM_URL, 'анкета отзыва')}\n\n"
-        "Как оставите отзыв — вернитесь сюда и нажмите кнопку ниже, и я пришлю ваш подарок 🎁",
-        reply_markup=kb_get_bonus(),
+        "📌 В конце анкеты будет ссылка — перейдите по ней, и я сразу пришлю ваш подарок 🎁"
     )
     await callback.answer()
 
@@ -384,6 +413,11 @@ async def cb_more_value(callback: CallbackQuery):
 async def cb_passed_yes(callback: CallbackQuery):
     uid = callback.from_user.id
     safe_remove(f"menu1h_{uid}")
+    u = await get_user(uid)
+    if u and u[8] == "passed":
+        await callback.answer()
+        return
+    await set_stage(uid, "passed")
     await callback.message.answer(
         "🔥 КЛАСС, хорошая заявка на лидерство!\n\n"
         "❓️Как вам тренажёр? Поделитесь коротким отзывом и забирайте подарок — "
@@ -625,14 +659,7 @@ async def cmd_admin(message: Message):
             refs = (await c.fetchone())[0]
         async with db.execute("SELECT stage, COUNT(*) FROM users GROUP BY stage") as c:
             stages = await c.fetchall()
-    stage_names = {
-        "new": "Только зашли",
-        "trainer_opened": "Открыли тренажёр",
-        "remind_later": "Напомнить позже",
-        "notify_offers": "Согласны на предложения",
-        "dont_disturb": "Не беспокоить",
-    }
-    stage_lines = "\n".join(f"  • {stage_names.get(s, s)}: {n}" for s, n in stages)
+    stage_lines = "\n".join(f"  • {STAGE_NAMES.get(s, s)}: {n}" for s, n in stages)
     await message.answer(
         f"📊 Статистика бота:\n\n"
         f"👥 Всего пользователей: {total}\n"
@@ -642,6 +669,49 @@ async def cmd_admin(message: Message):
         f"🔗 Рефералов: {refs}\n\n"
         f"Этапы воронки:\n{stage_lines}"
     )
+    users = await get_all_users(60)
+    if not users:
+        return
+    kb_rows = []
+    for uid, uname, fname, stage in users:
+        label = f"@{uname}" if uname else (fname or f"id{uid}")
+        short = STAGE_NAMES.get(stage, stage or "—")
+        kb_rows.append([InlineKeyboardButton(text=f"{label} · {short}", callback_data=f"au_{uid}")])
+    note = "👥 Пользователи (нажми на любого — покажу детали):"
+    if total > 60:
+        note += f"\n(показаны последние 60 из {total})"
+    await message.answer(note, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+async def render_user_detail(uid: int) -> str:
+    u = await get_user(uid)
+    if not u:
+        return "Пользователь не найден."
+    refs = await get_referral_count(uid)
+    name = f"@{u[1]}" if u[1] else (u[2] or f"id{u[0]}")
+    yn = lambda v: "✅" if v else "❌"
+    return (
+        f"👤 {name}  (id {u[0]})\n\n"
+        f"Этап: {STAGE_NAMES.get(u[8], u[8])}\n"
+        f"Зашёл: {u[4]}\n"
+        f"Открыл тренажёр: {yn(u[5])}\n"
+        f"Прошёл тренажёр: {yn(u[8] == 'passed')}\n"
+        f"Оставил отзыв: {yn(u[6])}\n"
+        f"Забрал подарок: {yn(u[7])}\n"
+        f"Пригласил рефералов: {refs}"
+    )
+
+@dp.callback_query(F.data.startswith("au_"))
+async def cb_user_detail(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer()
+        return
+    try:
+        uid = int(callback.data[3:])
+    except ValueError:
+        await callback.answer()
+        return
+    await callback.message.answer(await render_user_detail(uid))
+    await callback.answer()
 
 # ─── ОТЛОЖЕННЫЕ СООБЩЕНИЯ (дожимы) ───────────────────────────
 DOJIM_TEXTS = {
